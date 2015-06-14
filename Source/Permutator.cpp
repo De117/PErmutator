@@ -1,30 +1,13 @@
-/*
- * Tool for fine grained PE code permutation
- * Copyright (C) 2015 Bruno Humic
- * 
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- * 
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
- * 
- * You should have received a copy of the GNU General Public License along
- * with this program; if not, write to the Free Software Foundation, Inc.,
- * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
- */
-
 #include "Permutator.h"
 
-Permutator::Permutator(char* fileName)
+Permutator::Permutator(char* fileName, int exeFormat)
 {
 // Init exceptions for file IO
 	hInputFile.exceptions(std::fstream::badbit | std::fstream::failbit);
 	gvFile.exceptions(std::fstream::badbit | std::fstream::failbit);
 	outputFile.exceptions(std::fstream::badbit | std::fstream::failbit);
+
+	elfMode = (exeFormat)?(1):(0);
 
 	InitPermutator(fileName);
 }
@@ -44,33 +27,57 @@ int Permutator::CreateGraph(int creationMode)
 //		return -1;
 //	}
 
-	pExecSectionHeader = FindSection(hInputFile, pNtHeader->OptionalHeader.AddressOfEntryPoint, dwFstSctHdrOffset,
-		pNtHeader->FileHeader.NumberOfSections);
-	if (pExecSectionHeader == nullptr)
+	if (elfMode)
+		pElfExecSectionHeader = ElfFindSection(
+								hInputFile, 			// file
+								pElfHeader);			// ELF hdr
+	else
+		pExecSectionHeader = FindSection(
+								hInputFile, 
+								pNtHeader->OptionalHeader.AddressOfEntryPoint, 
+								dwFstSctHdrOffset,
+								pNtHeader->FileHeader.NumberOfSections);
+	if ((elfMode)?(!pElfExecSectionHeader):(!pExecSectionHeader))
 	{
-		std::cerr << "CreateGraph: Unable to read section header for executable code" << std::endl;
+		std::cerr << "CreateGraph: Unable to read section header"
+		   			<< " for executable code" << std::endl;
 		exit(-1);
 	}
 	
-	sectionData = LoadSection(hInputFile, pExecSectionHeader);
+	if (elfMode)
+		sectionData = ElfLoadSection(hInputFile, pElfExecSectionHeader);
+	else
+		sectionData = LoadSection(hInputFile, pExecSectionHeader);
+
 	if (sectionData == nullptr)
 	{
-		std::cerr << "CreateGraph: Unable to load executable section to memory" << std::endl;
+		std::cerr << "CreateGraph: Unable to load executable section to memory"
+					<< std::endl;
 		exit(-1);
 	}
 
-	DWORD dwSectionSize = pExecSectionHeader->SizeOfRawData;
+	DWORD dwSectionSize;
+	if (elfMode)
+		dwSectionSize = pElfExecSectionHeader->sh_size;
+	else
+		dwSectionSize = pExecSectionHeader->SizeOfRawData;
 
 	// Calculate entry point offset
-	DWORD dwEpOffset = pNtHeader->OptionalHeader.AddressOfEntryPoint - 
-		pExecSectionHeader->VirtualAddress;
+	DWORD dwEpOffset;
+	if (elfMode)
+		dwEpOffset = pElfHeader->e_entry - pElfExecSectionHeader->sh_addr;
+	else
+		dwEpOffset = pNtHeader->OptionalHeader.AddressOfEntryPoint
+					- pExecSectionHeader->VirtualAddress;
 
 	// Initialize array to differentiate data nodes from code nodes
-	dataSize = pExecSectionHeader->SizeOfRawData;
+	// dataSize = pExecSectionHeader->SizeOfRawData;
+	dataSize = dwSectionSize;
 	dataBytes = (BYTE*)malloc(dataSize);
 	if (dataBytes == nullptr)
 	{
-		std::cerr << "CreateGraph: Unable to allocate memory for data bytes: " << dataSize << std::endl;
+		std::cerr << "CreateGraph: Unable to allocate memory for data bytes: "
+					<< dataSize << std::endl;
 		exit(-1);
 	}
 	std::memset((BYTE*)dataBytes, 0, dataSize);
@@ -103,34 +110,61 @@ void Permutator::InitPermutator(char* fileName)
 	}
 	catch (std::fstream::failure e)
 	{
-		std::cerr << "InitPermutator: Error while opening input file: " << e.what() << std::endl;
+		std::cerr << "InitPermutator: Error while opening input file: " 
+					<< e.what() << std::endl;
 		exit(-1);
 	}
 
-	if (!ValidateFile(hInputFile))
-	{
-		std::cerr << "InitPermutator: Not a valid PE file (MZ signature)" << std::endl;
-		exit(-1);
+	if (elfMode) {
+
+		// Read the ELF header
+		pElfHeader = (Elf32_Ehdr *)
+						ReadHeader(hInputFile, sizeof(Elf32_Ehdr), 0);
+		if (!pElfHeader) {
+			std::cerr << "InitPermutator: cannot read ELF header" << std::endl;
+			exit(-1);
+		}
+
+		// Check if it's valid/supported
+		if (!elf_supported(pElfHeader)) {
+			std::cerr << "InitPermutator: invalid or unsupported format" 
+						<< std::endl;
+			exit(-1);
+		}
+
+	}
+	else {
+		if (!ValidateFile(hInputFile))
+		{
+			std::cerr << "InitPermutator: Not a valid PE file (MZ signature)" 
+						<< std::endl;
+			exit(-1);
+		}
+		// Read the DOS header
+		pDosHeader = (PIMAGE_DOS_HEADER)
+						ReadHeader(hInputFile, sizeof(IMAGE_DOS_HEADER), 0);
+		if (pDosHeader == nullptr)
+		{
+			std::cerr << "InitPermutator: Invalid DOS header" << std::endl;
+			exit(-1);
+		}
+
+		// Read the PE Header
+		pNtHeader = (PIMAGE_NT_HEADERS)
+						ReadHeader(hInputFile, sizeof(IMAGE_NT_HEADERS), 
+									pDosHeader->e_lfanew);
+		if (pNtHeader == nullptr)
+		{
+			std::cerr << "InitPermutator: Invalid NT header" << std::endl;
+			exit(-1);
+		}
+
+		// Find the file offset to the first section header
+		dwFstSctHdrOffset = pDosHeader->e_lfanew + 4 
+							+ IMAGE_SIZEOF_FILE_HEADER 
+							+ pNtHeader->FileHeader.SizeOfOptionalHeader;			
 	}
 
-	// Read the DOS header
-	pDosHeader = (PIMAGE_DOS_HEADER)ReadHeader(hInputFile, sizeof(IMAGE_DOS_HEADER), 0);
-	if (pDosHeader == nullptr)
-	{
-		std::cerr << "InitPermutator: Invalid DOS header" << std::endl;
-		exit(-1);
-	}
-
-	// Read the PE Header
-	pNtHeader = (PIMAGE_NT_HEADERS)ReadHeader(hInputFile, sizeof(IMAGE_NT_HEADERS), pDosHeader->e_lfanew);
-	if (pNtHeader == nullptr)
-	{
-		std::cerr << "InitPermutator: Invalid NT header" << std::endl;
-		exit(-1);
-	}
-
-	// Find the file offset to the first section header
-	dwFstSctHdrOffset = pDosHeader->e_lfanew + 4 + IMAGE_SIZEOF_FILE_HEADER + pNtHeader->FileHeader.SizeOfOptionalHeader;			
 }
 
 bool Permutator::IsJump(std::string mnemonic)
@@ -605,26 +639,55 @@ bool Permutator::WriteModifiedFile()
 {
 	try
 	{
-		outputFile.open("permutatedFile.exe", std::ios::out | std::ios::binary);
+		if (elfMode)
+			outputFile.open("permutatedFile", std::ios::out | std::ios::binary);
+		else
+			outputFile.open("permutatedFile.exe", std::ios::out | std::ios::binary);
 	}
 	catch (std::fstream::failure e)
 	{
-		std::cerr << "WriteModifiedFile: Error while opening stream to modified file: " << e.what() << std::endl;
+		std::cerr << "WriteModifiedFile: Error while opening stream "
+					<< "to modified file: " << e.what() << std::endl;
 		return false;
 	}
 	
 	try
 	{
-		// Write DOS header
-		outputFile.write((char*)pDosHeader, sizeof(IMAGE_DOS_HEADER));
+		if (elfMode) {
+			// Write ELF header
+			outputFile.write((char *)pElfHeader, sizeof(Elf32_Ehdr));
 
-		// Write NT header
-		outputFile.seekp(pDosHeader->e_lfanew, std::ios::beg);
-		outputFile.write((char*)pNtHeader, sizeof(IMAGE_NT_HEADERS));
+			// Write program headers
+			for (int i=0; i<pElfHeader->e_phnum; i++) {
+
+				Elf32_Phdr *pElfProgramHeader = (Elf32_Phdr *)
+				ReadHeader(hInputFile, sizeof(Elf32_Phdr),
+							i*sizeof(Elf32_Phdr)+pElfHeader->e_phoff);
+				if (!pElfProgramHeader) {
+					std::cerr << "WriteModifiedFile: Invalid program header read"
+								<< std::endl;
+					return false;
+				}
+				outputFile.write((char *)pElfProgramHeader, sizeof(Elf32_Phdr));
+			}
+
+			// Note: this assumes the offsets stay the same. 
+			//  the assumption will not hold when permutation is implemented
+		}
+		else {
+			// Write DOS header
+			outputFile.write((char*)pDosHeader, sizeof(IMAGE_DOS_HEADER));
+
+			// Write NT header
+			outputFile.seekp(pDosHeader->e_lfanew, std::ios::beg);
+			outputFile.write((char*)pNtHeader, sizeof(IMAGE_NT_HEADERS));
+		}
 	}
 	catch (std::fstream::failure e)
 	{
-		std::cerr << "WriteModifiedFile: Error while writing DOS/NT headers to modified file: " << e.what() << std::endl;
+		std::cerr << "WriteModifiedFile: Error while writing "
+					<< (elfMode ? "ELF/program" : "DOS/NT headers")
+					<< " to modified file: " << e.what() << std::endl;
 		return false;
 	}
 	
@@ -632,68 +695,156 @@ bool Permutator::WriteModifiedFile()
 	// Write section headers and section data
 	BYTE* sectionData = nullptr;
 	PIMAGE_SECTION_HEADER pSectionHeader = nullptr;
+	Elf32_Shdr *pElfSectionHeader = nullptr;
 
-	for (WORD i = 0; i < pNtHeader->FileHeader.NumberOfSections; ++i)
-	{
-		pSectionHeader = (PIMAGE_SECTION_HEADER)ReadHeader(hInputFile, IMAGE_SIZEOF_SECTION_HEADER, dwFstSctHdrOffset + i*IMAGE_SIZEOF_SECTION_HEADER);
-		if (pSectionHeader == nullptr)
-		{
-			std::cerr << "WriteModifiedFile: Invalid section header read" << std::endl;
-			return false;
-		}
-		
-		if (!WriteSectionHeader(pSectionHeader, i, outputFile, dwFstSctHdrOffset))
-		{
-			std::cerr << "WriteModifiedFile: Error writing the section header: " << pSectionHeader->Name << std::endl;
-			continue;
-		}
-
-		if ((pNtHeader->OptionalHeader.AddressOfEntryPoint >= pSectionHeader->VirtualAddress) &&
-			(pNtHeader->OptionalHeader.AddressOfEntryPoint < (pSectionHeader->VirtualAddress + pSectionHeader->Misc.VirtualSize)))
-		{
-			sectionData = (BYTE*)malloc(pSectionHeader->SizeOfRawData);
-			WriteGraph(graph.GetRoot(), sectionData);
-			WriteData(sectionData);
-			if (!WriteSection(outputFile, pSectionHeader, sectionData))
+	if (elfMode) {
+		for (int i=0; i < pElfHeader->e_shnum; i++) {
+			pElfSectionHeader = (Elf32_Shdr *)
+				ReadHeader(hInputFile, sizeof(Elf32_Shdr), 
+							i*sizeof(Elf32_Shdr)+pElfHeader->e_shoff);
+			if (!pElfSectionHeader)
 			{
-				std::cerr << "WriteModifiedFile: Error while writing data of executable section: " << pSectionHeader->Name << std::endl;
+				std::cerr << "WriteModifiedFile: Invalid section header read"
+					<< std::endl;
+				return false;
+			}
+
+			if (!ElfWriteSectionHeader(pElfSectionHeader, i, 
+										outputFile, pElfHeader->e_shoff))
+			{
+				std::cerr << "WriteModifiedFile: Error writing " << i+1 
+							<< ". section header" << std::endl;
 				continue;
 			}
-		}
-		else
-		{
-			sectionData = LoadSection(hInputFile, pSectionHeader);
-			if (sectionData == nullptr)
-			{
-				std::cerr << "WriteModifiedFile: Unable to load section: " << pSectionHeader->Name << std::endl;
-				continue;
-			}
-			if (!WriteSection(outputFile, pSectionHeader, sectionData))
-			{
-				std::cerr << "WriteModifiedFile: Error while writing data of section: " << pSectionHeader->Name << std::endl;
-				continue;
-			}
-		}
-		
 
-		free(pSectionHeader);
-		free(sectionData);
-		sectionData = nullptr;
-		pSectionHeader = nullptr;
+			// .text section
+			if ((pElfHeader->e_entry >= pElfSectionHeader->sh_addr) &&
+				(pElfHeader->e_entry < pElfSectionHeader->sh_addr
+				 						+ pElfSectionHeader->sh_size))
+			{
+				sectionData = (BYTE*)malloc(pElfSectionHeader->sh_size);
+				WriteGraph(graph.GetRoot(), sectionData);
+				WriteData(sectionData);
+				if (!ElfWriteSection(outputFile, pElfSectionHeader, sectionData))
+				{
+					std::cerr << "WriteModifiedFile: Error while writing data of "
+							<< i+1 << ". (executable) section" << std::endl;
+					continue;
+				}
+			}
+
+			// other sections
+			else
+			{
+				sectionData = ElfLoadSection(hInputFile, pElfSectionHeader);
+				if (!sectionData)
+				{
+					std::cerr << "WriteModifiedFile: Unable to load " << i+1
+								<< ". section" << std::endl;
+					continue;
+				}
+				if (!ElfWriteSection(outputFile, pElfSectionHeader, sectionData))
+				{
+					std::cerr << "WriteModifiedFile: Error while writing data of "
+								<< i+1 << ". section: " << std::endl;
+					continue;
+				}
+			}
+			
+
+			free(pElfSectionHeader);
+			free(sectionData);
+			pElfSectionHeader = nullptr;
+			sectionData = nullptr;
+		}
 	}
-
-// Write overlays if any
-	PIMAGE_SECTION_HEADER pLastSectionHeader = (PIMAGE_SECTION_HEADER)ReadHeader(hInputFile, IMAGE_SIZEOF_SECTION_HEADER,
-		dwFstSctHdrOffset + IMAGE_SIZEOF_SECTION_HEADER * (pNtHeader->FileHeader.NumberOfSections - 1));
-	DWORD overlaySize;
-	BYTE* overlay = ExtractOverlays(hInputFile, pLastSectionHeader, &overlaySize);
-	if (overlay != nullptr && overlaySize != 0)
-	{
-		if (!WriteDataToFile(outputFile, pLastSectionHeader->PointerToRawData + pLastSectionHeader->SizeOfRawData,
-			overlaySize, overlay))
+	else {
+		for (WORD i = 0; i < pNtHeader->FileHeader.NumberOfSections; ++i)
 		{
-			std::cerr << "WriteModifiedFile: Error while writing overlay data to modified file" << std::endl;
-			return false;
+			pSectionHeader = (PIMAGE_SECTION_HEADER)
+				ReadHeader(hInputFile, IMAGE_SIZEOF_SECTION_HEADER, 
+							dwFstSctHdrOffset + i*IMAGE_SIZEOF_SECTION_HEADER);
+			if (pSectionHeader == nullptr)
+			{
+				std::cerr << "WriteModifiedFile: Invalid section header read"
+					<< std::endl;
+				return false;
+			}
+			
+			if (!WriteSectionHeader(pSectionHeader, i, outputFile, dwFstSctHdrOffset))
+			{
+				std::cerr << "WriteModifiedFile: Error writing "
+							<< "the section header: " << pSectionHeader->Name
+							<< std::endl;
+				continue;
+			}
+
+			if ((pNtHeader->OptionalHeader.AddressOfEntryPoint 
+					>= pSectionHeader->VirtualAddress)
+				&&
+				(pNtHeader->OptionalHeader.AddressOfEntryPoint 
+				 	< (pSectionHeader->VirtualAddress 
+							+ pSectionHeader->Misc.VirtualSize)))
+			{
+				sectionData = (BYTE*)malloc(pSectionHeader->SizeOfRawData);
+				WriteGraph(graph.GetRoot(), sectionData);
+				WriteData(sectionData);
+				if (!WriteSection(outputFile, pSectionHeader, sectionData))
+				{
+					std::cerr << "WriteModifiedFile: Error while writing data of "
+							<< "executable section: " << pSectionHeader->Name
+							<< std::endl;
+					continue;
+				}
+			}
+			else
+			{
+				sectionData = LoadSection(hInputFile, pSectionHeader);
+				if (sectionData == nullptr)
+				{
+					std::cerr << "WriteModifiedFile: Unable to load section: "
+								<< pSectionHeader->Name << std::endl;
+					continue;
+				}
+				if (!WriteSection(outputFile, pSectionHeader, sectionData))
+				{
+					std::cerr << "WriteModifiedFile: Error while writing data of "
+								<< "section: " << pSectionHeader->Name 
+								<< std::endl;
+					continue;
+				}
+			}
+			
+
+			free(pSectionHeader);
+			free(sectionData);
+			sectionData = nullptr;
+			pSectionHeader = nullptr;
+		}
+
+	// Write overlays if any
+	// Overlay == data appended to PE file
+		PIMAGE_SECTION_HEADER pLastSectionHeader = (PIMAGE_SECTION_HEADER)
+			ReadHeader(hInputFile, 
+						IMAGE_SIZEOF_SECTION_HEADER, 
+						dwFstSctHdrOffset 
+							+ IMAGE_SIZEOF_SECTION_HEADER 
+							* (pNtHeader->FileHeader.NumberOfSections - 1));
+		DWORD overlaySize;
+		BYTE* overlay 
+				= ExtractOverlays(hInputFile, pLastSectionHeader, &overlaySize);
+		if (overlay != nullptr && overlaySize != 0)
+		{
+			if (!WriteDataToFile(outputFile, 
+								pLastSectionHeader->PointerToRawData 
+									+ pLastSectionHeader->SizeOfRawData,
+								overlaySize, 
+								overlay))
+			{
+				std::cerr << "WriteModifiedFile: Error while writing overlay "
+							<< "data to modified file" << std::endl;
+				return false;
+			}
 		}
 	}
 
@@ -704,7 +855,8 @@ bool Permutator::WriteModifiedFile()
 	}
 	catch (std::fstream::failure e)
 	{
-		std::cerr << "WriteModifiedFile: Error while closing modified file stream: " << e.what() << std::endl;
+		std::cerr << "WriteModifiedFile: Error while closing modified file "
+				<< "stream: " << e.what() << std::endl;
 		return false;
 	}
 

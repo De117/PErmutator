@@ -33,11 +33,5 @@ Node.o: Source/Node.cpp Headers/Node.h
 distorm3.a: ${COBJS}
 	${CC} ${CFLAGS} ${VERSION} ${COBJS} -shared -o ${TARGET}
 	ar rs distorm3.a ${COBJS}
-
-thesis: thesis/diplomski.pdf
-
-thesis/diplomski.pdf: thesis/diplomski.tex
-	cd thesis && rm -f diplomski.aux diplomski.lof diplomski.log diplomski.lot diplomski.pdf diplomski.toc && pdflatex diplomski.tex && bibtex diplomski && pdflatex diplomski.tex && pdflatex diplomski.tex
-
 clean:
-	rm -rf PErmutator *.o ExternalLib/distorm3/src/*.o *.so *.a graph.dot permutatedFile.exe thesis/diplomski.aux thesis/diplomski.dvi thesis/diplomski.lof thesis/diplomski.log thesis/diplomski.lot thesis/diplomski.pdf thesis/diplomski.toc
+	rm -rf PErmutator *.o ExternalLib/distorm3/src/*.o *.so *.a graph.dot permutatedFile permutatedFile.exe 

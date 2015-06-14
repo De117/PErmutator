@@ -1,22 +1,3 @@
-/*
- * Tool for fine grained PE code permutation
- * Copyright (C) 2015 Bruno Humic
- * 
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- * 
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
- * 
- * You should have received a copy of the GNU General Public License along
- * with this program; if not, write to the Free Software Foundation, Inc.,
- * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
- */
-
 #include "PEFunctions.h"
 
 void OpenFile(const char *fileName, std::fstream& hFile)
@@ -125,6 +106,79 @@ PIMAGE_SECTION_HEADER FindSection(std::fstream& hFile, DWORD dwRVA, DWORD dwFstS
 	return nullptr;
 }
 
+Elf32_Shdr *ElfFindSection(std::fstream& hFile, Elf32_Ehdr *hdr)
+{
+	Elf32_Shdr *shdr;
+	//  Elf32_Addr entry = pElfHeader->e_entry;		// entry point (RVA)
+	//  Elf32_Off shoffset = pElfHeader->e_shoff;	// section headers offset
+	//  Elf32_Half shnum = pElfHeader->e_shnum;		// number of section headers
+	Elf32_Shdr *shstrtabhdr = nullptr;	// section header stringtable header
+	char *shstrtable = nullptr;			// section header stringtable
+
+	shstrtabhdr = (Elf32_Shdr *)ReadHeader(hFile, sizeof(Elf32_Shdr),
+					hdr->e_shoff + hdr->e_shstrndx*sizeof(Elf32_Shdr));
+	shstrtable = (char *)ReadHeader(hFile, 
+									shstrtabhdr->sh_size,
+									shstrtabhdr->sh_offset);
+	
+	for (int i=0; i<(int)hdr->e_shoff; i++) {
+		shdr = (Elf32_Shdr *)ReadHeader(hFile, sizeof(Elf32_Shdr), 
+										hdr->e_shoff + i*sizeof(Elf32_Shdr));
+		if (!strcmp(".text", ((const char *)(shstrtable + shdr->sh_name)))) {
+			return shdr;
+			free(shstrtable);
+		} else
+			free(shdr);
+	}
+	free(shstrtable);
+	return nullptr;
+}
+
+BYTE *ElfLoadSection(std::fstream& hFile, Elf32_Shdr *shdr)
+{
+	return (BYTE *)ReadHeader(hFile, shdr->sh_size, shdr->sh_offset);
+}
+
+BOOL ElfWriteSection(std::ofstream& hFile, Elf32_Shdr *pElfSectionHeader,
+						unsigned char *buffer)
+{
+	if (pElfSectionHeader->sh_type == SHT_NULL || 
+		pElfSectionHeader->sh_type == SHT_NOBITS)
+		return TRUE;
+	try
+	{
+		hFile.seekp(pElfSectionHeader->sh_offset, std::ios::beg);
+		hFile.write((char*)buffer, pElfSectionHeader->sh_size);
+	}
+	catch (std::fstream::failure e)
+	{
+		std::cerr << "WriteSection: Error while writing section data: " 
+					<< e.what() << std::endl;
+		return FALSE;
+	}
+
+	return TRUE;
+}
+
+BOOL ElfWriteSectionHeader(Elf32_Shdr *pElfSectionHeader, int index, 
+								std::ofstream& hFile, int shoff)
+{
+	if (pElfSectionHeader->sh_type == SHT_NULL)
+		return TRUE;
+	try
+	{
+		hFile.seekp(shoff + index*sizeof(Elf32_Shdr), std::ios::beg);
+		hFile.write((char*)pElfSectionHeader, sizeof(Elf32_Shdr));
+	}
+	catch (std::fstream::failure e)
+	{
+		std::cerr << "WriteSectionHeader: Error while writing the section header: "
+					<< e.what() << std::endl;
+		return FALSE;
+	}
+
+	return TRUE;
+}
 DWORD AlignUp(DWORD dwSize, DWORD dwAlign)
 {
 	return ((dwSize + dwAlign - 1) - (dwSize + dwAlign - 1) % dwAlign);
@@ -384,4 +438,35 @@ BYTE* ExtractOverlays(std::fstream& hFile, PIMAGE_SECTION_HEADER pLastSectionHea
 	
 	*overlay_size = overlaySize;
 	return overlayBuffer;
+}
+
+BOOL elf_supported(Elf32_Ehdr *hdr) {
+
+	if (!hdr) return FALSE;
+
+	// not an ELF file
+	if(hdr->e_ident[EI_MAG0] != ELFMAG0 || hdr->e_ident[EI_MAG1] != ELFMAG1
+	|| hdr->e_ident[EI_MAG2] != ELFMAG2 || hdr->e_ident[EI_MAG3] != ELFMAG3)
+		return FALSE;
+	// unsupported ELF file class (must have 32-bit objects)
+	if(hdr->e_ident[EI_CLASS] != ELFCLASS32)
+		return FALSE;
+	// unsupported ELF file byte order (must be little-endian)
+	if(hdr->e_ident[EI_DATA] != ELFDATA2LSB)
+		return FALSE;
+	// unsupported machine architecture	(must be x86)
+	if(hdr->e_machine != EM_386)
+		return FALSE;
+	// unsupported ELF file version (must be current)
+	if(hdr->e_ident[EI_VERSION] != EV_CURRENT)
+		return FALSE;
+	// unsupported ELF file type (must be relocatable or executable)
+	if(hdr->e_type != ET_REL && hdr->e_type != ET_EXEC)
+		return FALSE;
+
+	// check existence of shdr and phdr
+	if(!hdr->e_shoff || !hdr->e_phoff)
+		return FALSE;
+
+	return TRUE;
 }

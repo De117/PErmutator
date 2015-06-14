@@ -1,22 +1,3 @@
-/*
- * Tool for fine grained PE code permutation
- * Copyright (C) 2015 Bruno Humic
- * 
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- * 
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
- * 
- * You should have received a copy of the GNU General Public License along
- * with this program; if not, write to the Free Software Foundation, Inc.,
- * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
- */
-
 #pragma once
 #include <algorithm>
 #include <iostream>
@@ -71,3 +52,22 @@ BYTE* LoadExecutableSection(std::fstream& hFile, PIMAGE_DOS_HEADER pDosHeader, P
 BOOL ValidateFile(std::fstream& hFile);
 
 BYTE* ExtractOverlays(std::fstream& hFile, PIMAGE_SECTION_HEADER pLastSectionHeader, DWORD *overlay_size);
+
+// ### added for ELF support:
+
+// Check if ELF file is valid and supported
+BOOL elf_supported(Elf32_Ehdr *hdr);
+
+// Finds section containing executable code
+Elf32_Shdr *ElfFindSection(std::fstream& hFile, Elf32_Ehdr *hdr);
+
+// Load the chosed section from ELF file to memory
+BYTE *ElfLoadSection(std::fstream& hFile, Elf32_Shdr *shdr);
+
+// Writes the given section back to file on disk
+BOOL ElfWriteSection(std::ofstream& hFile, Elf32_Shdr *pElfSectionHeader,
+						unsigned char *buffer);
+//
+// Write the ELF section header at the appropriate offset in file
+BOOL ElfWriteSectionHeader(Elf32_Shdr *pElfSectionHeader, int index, 
+								std::ofstream& hFile, int shoff);
