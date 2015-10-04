@@ -11,13 +11,7 @@ int main(int argc, char* argv[])
 		return 1;
 	}
 
-	int exeType;
-	std::cout << "Enter executable file format:" << std::endl;
-	std::cout << "0 - PE" << std::endl;
-	std::cout << "1 - ELF" << std::endl;
-	std::cin >> exeType;
-
-	Permutator permutator(argv[1], exeType);
+	Permutator permutator(argv[1]);
 
 	int creationMode;
 	std::cout << "Enter graph creation mode:" << std::endl;

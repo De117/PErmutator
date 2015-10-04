@@ -22,7 +22,7 @@ typedef struct _Block
 class Permutator
 {
 public:
-	Permutator(char* fileName, int exeFormat);
+	Permutator(char* fileName);
 	~Permutator();
 
 	Graph* GetGraph();

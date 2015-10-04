@@ -1,13 +1,11 @@
 #include "Permutator.h"
 
-Permutator::Permutator(char* fileName, int exeFormat)
+Permutator::Permutator(char* fileName)
 {
 // Init exceptions for file IO
 	hInputFile.exceptions(std::fstream::badbit | std::fstream::failbit);
 	gvFile.exceptions(std::fstream::badbit | std::fstream::failbit);
 	outputFile.exceptions(std::fstream::badbit | std::fstream::failbit);
-
-	elfMode = (exeFormat)?(1):(0);
 
 	InitPermutator(fileName);
 }
@@ -112,6 +110,26 @@ void Permutator::InitPermutator(char* fileName)
 	{
 		std::cerr << "InitPermutator: Error while opening input file: " 
 					<< e.what() << std::endl;
+		exit(-1);
+	}
+
+// Determine whether ELF or PE
+	char sig[4];
+	try {
+		hInputFile.read(sig, 4);
+	}
+	catch (std::fstream::failure e) {
+		std::cerr << "InitPermutator: Error while reading input file: " 
+					<< e.what() << std::endl;
+		exit(-1);
+	}
+
+	if (sig[0]=='M'&&sig[1]=='Z')
+		elfMode = 0;
+	else if (sig[0]==0x7f && sig[1]=='E' && sig[2]=='L' && sig[3]=='F')
+		elfMode = 1;
+	else {
+		std::cerr << "InitPermutator: Error, file corrupted" << std::endl;
 		exit(-1);
 	}
 
